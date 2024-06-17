@@ -1,0 +1,19 @@
+[package]
+name = "silero_vad"
+version = "0.0.1"
+edition = "2021"
+authors = ["Wenqing Zong"]
+
+[dependencies]
+anyhow = "1.0.82"
+env_logger = "0.11.3"
+fvad = "0.1.3"
+hound = "3.5.1"
+log = "0.4.21"
+ndarray = "0.15.6"
+ndarray-stats = "0.5.1"
+ort = "2.0.0-rc.1"
+rubato = "0.15.0"
+symphonia = { version = "0.5.4", features = ["all"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "fmt"] }

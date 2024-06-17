@@ -1,2 +1,2 @@
-# Silero_VAD
+# Rust_VAD
 Rust version of Silero VAD
