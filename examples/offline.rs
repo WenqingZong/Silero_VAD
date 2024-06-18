@@ -118,7 +118,7 @@ fn handle_speech_segment(data: &[f32], end_segment_idx: usize, start_segment_idx
 
 fn main() {
     // Setup logger.
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("debug")).init();
 
     // Strategy to deal with stereo audio.
     let multi_channel_strategy = MultiChannelStrategy::Average;

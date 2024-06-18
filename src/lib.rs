@@ -170,9 +170,9 @@ impl VAD {
                 }
             }
 
-            self.total_processed_frames += 1;
             processed_frames += 1;
         }
+        self.total_processed_frames += num_frames;
 
         // Clear audio buffer.
         if processed_frames > 0 {
@@ -202,7 +202,7 @@ impl Default for VadConfig {
             negative_speech_threshold: 0.35,
             pre_speech_pad_frames: 1,
             redemption_frames: 8,
-            frame_samples: 1536,
+            frame_samples: 240,
             min_speech_frames: 3,
         }
     }
