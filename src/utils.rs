@@ -20,9 +20,18 @@ use symphonia::core::probe::Hint;
 
 // Project libraries.
 
+/// The way to deal with Stereo audio file
+pub enum MultiChannelStrategy {
+    /// Only take the first channel data for VAD inference.
+    FirstOnly,
+
+    /// Take the average of all channels for VAD inference.
+    Average,
+}
+
 /// Read an audio file into pcm format data with desired sampling rate.
 /// Code modified from https://github.com/pdeljanov/Symphonia/blob/master/symphonia/examples/basic-interleaved.rs
-pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize) -> Vec<f32> {
+pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize, multi_channel_strategy: MultiChannelStrategy) -> Vec<f32> {
     info!("Reading {}", file_path.as_ref().display());
     // Create a media source. Note that the MediaSource trait is automatically implemented for File,
     // among other types.
@@ -95,6 +104,7 @@ pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize) 
                     let spec = *audio_buf.spec();
                     original_sample_rate = spec.rate;
                     num_of_channels = spec.channels.count();
+                    debug!("Original file has {} channel(s) with sample rate {}", num_of_channels, original_sample_rate);
 
                     // Get the capacity of the decoded buffer. Note: This is capacity, not length!
                     let duration = audio_buf.capacity() as u64;
@@ -115,11 +125,38 @@ pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize) 
         }
     }
     
-    // Now we have interleaved audio, need to convert it to channel based. 
-    let audio = interleaved_to_channel(interleave_samples, num_of_channels);
-    dbg!(format!("Original audio has {} channel(s)", num_of_channels));
+    // Now we have interleaved audio, need to convert it to channel based.
+    let stereo_audio = interleaved_to_channel(interleave_samples, num_of_channels);
 
-    resample_pcm(audio[0].clone(), original_sample_rate as usize, desired_sample_rate).unwrap()
+    // Silero VAD only work with mono audio.
+    let mono_audio = stereo_to_mono(stereo_audio, multi_channel_strategy);
+
+    // Silero VAD only work with 8000 or 16000 Hz audio.
+    resample_pcm(mono_audio, original_sample_rate as usize, desired_sample_rate).unwrap()
+}
+
+/// Convert stereo audio to mono audio based on [MultiChannelStrategy].
+fn stereo_to_mono(stereo: Vec<Vec<f32>>, multi_channel_strategy: MultiChannelStrategy) -> Vec<f32> {
+    match multi_channel_strategy {
+        MultiChannelStrategy::FirstOnly => {
+            stereo[0].clone()
+        },
+        MultiChannelStrategy::Average => {
+            let samples = stereo[0].len();
+            let channels = stereo.len();
+            let mut mono = Vec::new();
+            mono.resize(samples, 0.0);
+
+            for i in 0..samples {
+                let mut sum = 0.0;
+                for channel in 0..channels {
+                    sum += stereo[channel][i];
+                }
+                mono[i] = sum / channels as f32;
+            }
+            mono
+        }
+    }
 }
 
 /// Convert an interleaved pcm data to channel based.
@@ -191,7 +228,7 @@ pub fn save_pcm_to_wav(file_path: &str, pcm_data: Vec<f32>, sample_rate: u32, ch
 }
 
 /// Convert to i16 to satisfy VAD model requirement.
-pub fn convert_vec_f32_to_vec_i16(data: &[f32]) -> Vec<i16> {
+pub fn vec_f32_to_vec_i16(data: &[f32]) -> Vec<i16> {
     data.iter()
         .map(|&sample| {
             // Clamp the values to the -1.0 to 1.0 range to prevent unexpected behavior

@@ -11,7 +11,7 @@ use log::{info, error, warn, debug};
 
 // Project libraries.
 use silero_vad::utils::{read_audio_file, save_pcm_to_wav};
-use silero_vad::VAD;
+use silero_vad::{MultiChannelStrategy, VAD};
 
 // fn main() -> Result<()> {
 //     // System init.
@@ -119,14 +119,19 @@ fn handle_speech_segment(data: &[f32], end_segment_idx: usize, start_segment_idx
 fn main() {
     // Setup logger.
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-    let samples = read_audio_file("../audio_files/segfault.mp3", 44100);
-    dbg!(samples.len());
-    let stat = Array1::from(samples.clone());
+
+    // Strategy to deal with stereo audio.
+    let multi_channel_strategy = MultiChannelStrategy::Average;
+
+    let desired_sample_rate = 8000;
+    let audio = read_audio_file("../audio_files/segfault.mp3", desired_sample_rate, multi_channel_strategy);
+    dbg!(audio.len());
+    let stat = Array1::from(audio.clone());
     dbg!(&stat.min().unwrap());
     dbg!(&stat.max().unwrap());
     dbg!(&stat.mean().unwrap());
     dbg!(&stat.std(0.0));
-    save_pcm_to_wav("./output.wav", samples, 44100, 1).unwrap();
-    let vad = VAD::new(16000);
+    save_pcm_to_wav("./output.wav", audio, desired_sample_rate as u32, 1).unwrap();
+    let vad = VAD::new(desired_sample_rate);
     println!("Library is still under development, thank you for your patience");
 }
