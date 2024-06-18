@@ -1,3 +1,6 @@
+//! Some useful utilities to handle audio file reading, resampling, and writing. Should work with
+//! any audio format.
+
 // System libraries.
 use std::fs::File;
 use std::path::Path;
@@ -119,6 +122,7 @@ pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize) 
     resample_pcm(audio[0].clone(), original_sample_rate as usize, desired_sample_rate).unwrap()
 }
 
+/// Convert an interleaved pcm data to channel based.
 fn interleaved_to_channel(interleave_samples: Vec<f32>, num_of_channels: usize) -> Vec<Vec<f32>> {
     let mut audio = vec![vec![]; num_of_channels];
     let mut channel_idx = 0;
@@ -137,7 +141,7 @@ fn interleaved_to_channel(interleave_samples: Vec<f32>, num_of_channels: usize) 
     audio
 }
 
-/// Resample a pcm data into desired sample rate.
+/// Resample one channel of pcm data into desired sample rate.
 pub fn resample_pcm(pcm_data: Vec<f32>, original_sample_rate: usize, desired_sample_rate: usize) -> Result<Vec<f32>> {
     debug!("{} {} {}", &pcm_data.len(), original_sample_rate, desired_sample_rate);
     let params = SincInterpolationParameters {
@@ -160,7 +164,7 @@ pub fn resample_pcm(pcm_data: Vec<f32>, original_sample_rate: usize, desired_sam
     Ok(waves_out[0].clone())
 }
 
-/// Save a pcm data into wav file.
+/// Save a mono pcm data into wav file. This method is only for debugging.
 pub fn save_pcm_to_wav(file_path: &str, pcm_data: Vec<f32>, sample_rate: u32, channels: u16) -> Result<()> {
     // Define the WAV file specifications
     let spec = WavSpec {
@@ -184,4 +188,18 @@ pub fn save_pcm_to_wav(file_path: &str, pcm_data: Vec<f32>, sample_rate: u32, ch
     writer.finalize()?;
 
     Ok(())
+}
+
+/// Convert to i16 to satisfy VAD model requirement.
+pub fn convert_vec_f32_to_vec_i16(data: &[f32]) -> Vec<i16> {
+    data.iter()
+        .map(|&sample| {
+            // Clamp the values to the -1.0 to 1.0 range to prevent unexpected behavior
+            let clamped_sample = sample.clamp(-1.0, 1.0);
+            // Scale the clamped sample to the i16 range
+            let scaled_sample = clamped_sample * 32767.0;
+            // Convert to i16
+            scaled_sample as i16
+        })
+        .collect()
 }
