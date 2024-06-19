@@ -1,3 +1,6 @@
+//! Some useful utilities to handle audio file reading, resampling, and writing. Should work with
+//! any audio format.
+
 // System libraries.
 use std::fs::File;
 use std::path::Path;
@@ -17,9 +20,18 @@ use symphonia::core::probe::Hint;
 
 // Project libraries.
 
+/// The way to deal with Stereo audio file
+pub enum MultiChannelStrategy {
+    /// Only take the first channel data for VAD inference.
+    FirstOnly,
+
+    /// Take the average of all channels for VAD inference.
+    Average,
+}
+
 /// Read an audio file into pcm format data with desired sampling rate.
 /// Code modified from https://github.com/pdeljanov/Symphonia/blob/master/symphonia/examples/basic-interleaved.rs
-pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize) -> Vec<f32> {
+pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize, multi_channel_strategy: MultiChannelStrategy) -> Vec<f32> {
     info!("Reading {}", file_path.as_ref().display());
     // Create a media source. Note that the MediaSource trait is automatically implemented for File,
     // among other types.
@@ -46,7 +58,6 @@ pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize) 
 
     // Get the default track.
     let track = format.default_track().unwrap();
-    dbg!(&track);
 
     // Create a decoder for the track.
     let mut decoder =
@@ -92,6 +103,7 @@ pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize) 
                     let spec = *audio_buf.spec();
                     original_sample_rate = spec.rate;
                     num_of_channels = spec.channels.count();
+                    debug!("Original file has {} channel(s) with sample rate {}", num_of_channels, original_sample_rate);
 
                     // Get the capacity of the decoded buffer. Note: This is capacity, not length!
                     let duration = audio_buf.capacity() as u64;
@@ -112,13 +124,41 @@ pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize) 
         }
     }
     
-    // Now we have interleaved audio, need to convert it to channel based. 
-    let audio = interleaved_to_channel(interleave_samples, num_of_channels);
-    dbg!(format!("Original audio has {} channel(s)", num_of_channels));
+    // Now we have interleaved audio, need to convert it to channel based.
+    let stereo_audio = interleaved_to_channel(interleave_samples, num_of_channels);
 
-    resample_pcm(audio[0].clone(), original_sample_rate as usize, desired_sample_rate).unwrap()
+    // Silero VAD only work with mono audio.
+    let mono_audio = stereo_to_mono(stereo_audio, multi_channel_strategy);
+
+    // Silero VAD only work with 8000 or 16000 Hz audio.
+    resample_pcm(mono_audio, original_sample_rate as usize, desired_sample_rate).unwrap()
 }
 
+/// Convert stereo audio to mono audio based on [MultiChannelStrategy].
+fn stereo_to_mono(stereo: Vec<Vec<f32>>, multi_channel_strategy: MultiChannelStrategy) -> Vec<f32> {
+    match multi_channel_strategy {
+        MultiChannelStrategy::FirstOnly => {
+            stereo[0].clone()
+        },
+        MultiChannelStrategy::Average => {
+            let samples = stereo[0].len();
+            let channels = stereo.len();
+            let mut mono = Vec::new();
+            mono.resize(samples, 0.0);
+
+            for i in 0..samples {
+                let mut sum = 0.0;
+                for channel in 0..channels {
+                    sum += stereo[channel][i];
+                }
+                mono[i] = sum / channels as f32;
+            }
+            mono
+        }
+    }
+}
+
+/// Convert an interleaved pcm data to channel based.
 fn interleaved_to_channel(interleave_samples: Vec<f32>, num_of_channels: usize) -> Vec<Vec<f32>> {
     let mut audio = vec![vec![]; num_of_channels];
     let mut channel_idx = 0;
@@ -137,9 +177,9 @@ fn interleaved_to_channel(interleave_samples: Vec<f32>, num_of_channels: usize) 
     audio
 }
 
-/// Resample a pcm data into desired sample rate.
+/// Resample one channel of pcm data into desired sample rate.
 pub fn resample_pcm(pcm_data: Vec<f32>, original_sample_rate: usize, desired_sample_rate: usize) -> Result<Vec<f32>> {
-    debug!("{} {} {}", &pcm_data.len(), original_sample_rate, desired_sample_rate);
+    debug!("Resampling {} samples from {}Hz to {}Hz", &pcm_data.len(), original_sample_rate, desired_sample_rate);
     let params = SincInterpolationParameters {
         sinc_len: 256,
         f_cutoff: 0.95,
@@ -160,7 +200,7 @@ pub fn resample_pcm(pcm_data: Vec<f32>, original_sample_rate: usize, desired_sam
     Ok(waves_out[0].clone())
 }
 
-/// Save a pcm data into wav file.
+/// Save a mono pcm data into wav file. This method is only for debugging.
 pub fn save_pcm_to_wav(file_path: &str, pcm_data: Vec<f32>, sample_rate: u32, channels: u16) -> Result<()> {
     // Define the WAV file specifications
     let spec = WavSpec {
@@ -184,4 +224,18 @@ pub fn save_pcm_to_wav(file_path: &str, pcm_data: Vec<f32>, sample_rate: u32, ch
     writer.finalize()?;
 
     Ok(())
+}
+
+/// Convert to i16 to satisfy VAD model requirement.
+pub fn vec_f32_to_vec_i16(data: &[f32]) -> Vec<i16> {
+    data.iter()
+        .map(|&sample| {
+            // Clamp the values to the -1.0 to 1.0 range to prevent unexpected behavior
+            let clamped_sample = sample.clamp(-1.0, 1.0);
+            // Scale the clamped sample to the i16 range
+            let scaled_sample = clamped_sample * 32767.0;
+            // Convert to i16
+            scaled_sample as i16
+        })
+        .collect()
 }

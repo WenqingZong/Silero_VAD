@@ -16,3 +16,6 @@ Cargo.lock
 # IDEs
 .idea/
 .vscode/
+
+# Debug files.
+output.wav
