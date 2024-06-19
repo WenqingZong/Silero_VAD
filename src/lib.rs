@@ -18,8 +18,32 @@ pub struct VadConfig {
     pub negative_speech_threshold: f32,
     pub pre_speech_pad_frames: usize,
     pub redemption_frames: usize,
-    pub frame_samples: usize,
+    pub sample_rate: usize,
     pub min_speech_frames: usize,
+}
+
+impl Default for VadConfig {
+    fn default() -> Self {
+        // Value copied from https://github.com/ricky0123/vad/blob/ea584aaf66d9162fb19d9bfba607e264452980c3/packages/_common/src/frame-processor.ts#L52
+        Self {
+            positive_speech_threshold: 0.5,
+            negative_speech_threshold: 0.35,
+            pre_speech_pad_frames: 1,
+            redemption_frames: 20,
+            sample_rate: 16000,
+            min_speech_frames: 3,
+        }
+    }
+}
+
+impl VadConfig {
+    pub fn get_frame_samples(&self) -> usize {
+        (30_f32 / 1000_f32 * self.sample_rate as f32) as usize // 30ms * sample_rate Hz
+    }
+
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 /// The voice activity detector.
@@ -191,25 +215,5 @@ impl VAD {
         self.current_speech_segments = 0;
         self.audio_buffer.clear();
         self.total_processed_frames = 0;
-    }
-}
-
-impl Default for VadConfig {
-    fn default() -> Self {
-        // Value copied from https://github.com/ricky0123/vad/blob/ea584aaf66d9162fb19d9bfba607e264452980c3/packages/_common/src/frame-processor.ts#L52
-        Self {
-            positive_speech_threshold: 0.5,
-            negative_speech_threshold: 0.35,
-            pre_speech_pad_frames: 1,
-            redemption_frames: 8,
-            frame_samples: 240,
-            min_speech_frames: 3,
-        }
-    }
-}
-
-impl VadConfig {
-    pub fn new() -> Self {
-        Self::default()
     }
 }
