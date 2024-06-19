@@ -3,7 +3,7 @@ pub mod utils;
 // System libraries.
 
 // Third Party libraries.
-use anyhow::bail;
+use anyhow::{Result, bail};
 use log::{debug, info};
 use ndarray::{Array1, Array2, Array3, ArrayBase, Ix1, Ix3, OwnedRepr};
 use ort::{GraphOptimizationLevel, Session};
@@ -41,78 +41,76 @@ impl VadConfig {
         (30_f32 / 1000_f32 * self.sample_rate as f32) as usize // 30ms * sample_rate Hz
     }
 
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(sample_rate: usize) -> Self {
+        let mut ret = Self::default();
+        ret.sample_rate = sample_rate;
+        ret
     }
 }
 
 /// The voice activity detector.
 #[derive(Debug)]
-pub struct VAD {
-    pub vad_config: VadConfig,
-
-    vad_state: VadState,
-    audio_buffer: Vec<f32>,
-    redemption_count: usize,
-    total_processed_frames: usize,
-    current_speech_segments: usize,
+pub struct VadSession {
+    config: VadConfig,
     model: Session,
     h_tensor: ArrayBase<OwnedRepr<f32>, Ix3>,
     c_tensor: ArrayBase<OwnedRepr<f32>, Ix3>,
     sample_rate_tensor: ArrayBase<OwnedRepr<i64>, Ix1>,
+    state: VadState,
+    current_speech: Vec<f32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VadState {
+    Speech {
+        min_frames_passed: bool,
+        redemption_count: usize,
+    },
+    Silence,
 }
 
 /// Detection result of a piece of audio.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VadState {
-    Speech,
-    Silence,
+pub enum VadTransition {
+    SpeechStart,
+    SpeechEnd,
 }
 
-/// A piece of active voice.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VadResult {
-    pub start_ms: usize,
-    pub end_ms: usize,
-}
-
-impl VAD {
+impl VadSession {
     /// Construct an VAD, currently only support 8000 and 16000 Hz audio data.
-    pub fn new(sample_rate: usize, vad_config: VadConfig) -> anyhow::Result<Self> {
-        if ![8000_usize, 16000].contains(&sample_rate) {
+    pub fn new(config: VadConfig) -> Result<Self> {
+        if ![8000_usize, 16000].contains(&config.sample_rate) {
             bail!("Unsupported sample rate, use 8000 or 16000!");
         }
-
         let model = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(4)?
-            .commit_from_file(concat!(env!("CARGO_MANIFEST_DIR"), "/models/silero_vad.onnx"))?;
+            .commit_from_file(format!(
+                "{}/models/silero_vad.onnx",
+                env!("CARGO_MANIFEST_DIR")
+            ))?;
         let h_tensor = Array3::<f32>::zeros((2, 1, 64));
         let c_tensor = Array3::<f32>::zeros((2, 1, 64));
-        let sample_rate_tensor = Array1::from_vec(vec![sample_rate as i64]);
+        let sample_rate_tensor = Array1::from_vec(vec![config.sample_rate as i64]);
 
         Ok(Self {
-            vad_config,
-            vad_state: VadState::Silence,
-            audio_buffer: Vec::new(),
-            redemption_count: 0,
-            total_processed_frames: 0,
-            current_speech_segments: 0,
+            config,
             model,
             h_tensor,
             c_tensor,
             sample_rate_tensor,
+            state: VadState::Silence,
+            current_speech: vec![],
         })
     }
 
-    /// Get VAD algorithm frame size.
-    pub fn frame_size(&self) -> usize {
-        self.vad_config.frame_samples
-    }
-
-    /// Process one frame, return the probability of this frame is active speech.
-    pub fn process_frame(&mut self, data: &[f32]) -> anyhow::Result<f32> {
-        let audio_tensor = Array2::from_shape_vec((1, data.len()), data.to_vec())?;
+    /// Advance the VAD state machine with an audio frame (should be 30ms).
+    /// Return indicates if a transition from speech to silence (or silence to speech) occurred.
+    ///
+    /// Important: don't implement your own end pointing logic.
+    /// Instead, when a `SpeechEnd` is returned, you can use the `get_current_speech()` method to retrieve the audio.
+    pub fn process(&mut self, audio_frame: &[f32]) -> Result<Option<VadTransition>> {
+        let audio_tensor = Array2::from_shape_vec((1, audio_frame.len()), audio_frame.to_vec())?;
         let result = self.model.run(ort::inputs![
             audio_tensor.view(),
             self.sample_rate_tensor.view(),
@@ -136,84 +134,68 @@ impl VAD {
             .unwrap()
             .to_owned()
             .into_shape((2, 1, 64))
-            .expect("Shape mismatch for c_tensor");
+            .expect("Shape mismatch for h_tensor");
 
-        Ok(*result
+        let prob = *result
             .get("output")
             .unwrap()
             .try_extract_tensor::<f32>()
             .unwrap()
             .first()
-            .unwrap())
-    }
+            .unwrap();
 
-    pub fn process_audio(&mut self, mono_audio: &[f32]) -> Vec<VadResult> {
-        self.audio_buffer.extend_from_slice(mono_audio);
-        let mut ret = Vec::new();
-        let mut start_ms = 0;
-        let mut processed_frames = 0;
+        let mut vad_change = None;
 
-        // The main algorithm, described here: https://wiki.vad.ricky0123.com/en/docs/user/algorithm
-        let num_frames = self.audio_buffer.len() / self.frame_size();
-        for i in 0..num_frames {
-            let start_idx = i * self.frame_size();
-            let end_idx = (i + 1) * self.frame_size();
-            let audio_frame = &self.audio_buffer.clone()[start_idx..end_idx];
+        match self.state {
+            VadState::Silence => {
+                if prob > self.config.positive_speech_threshold {
+                    self.state = VadState::Speech {
+                        min_frames_passed: false,
+                        redemption_count: 0,
+                    };
+                    self.current_speech.clear();
+                    self.current_speech.extend_from_slice(audio_frame);
+                } else {
+                    self.state = VadState::Silence
+                }
+            },
+            VadState::Speech { ref mut min_frames_passed, ref mut redemption_count, } => {
+                self.current_speech.extend_from_slice(audio_frame);
+                if !*min_frames_passed && self.current_speech.len() >= self.config.min_speech_frames {
+                    *min_frames_passed = true;
+                    vad_change = Some(VadTransition::SpeechStart)
+                }
 
-            let speech_prob = self.process_frame(audio_frame).unwrap();
-            debug!("[{}ms -> {}ms]: {}",
-                (((self.total_processed_frames + i) * self.frame_size()) as f32 / 8000.0 * 1000.0) as usize,
-                (((self.total_processed_frames + i + 1) * self.frame_size()) as f32 / 8000.0 * 1000.0) as usize,
-                speech_prob,
-            );
-
-            if self.vad_state == VadState::Silence && speech_prob > self.vad_config.positive_speech_threshold {
-                start_ms = (((self.total_processed_frames + i) * self.frame_size()) as f32 / 8000.0 * 1000.0) as usize;
-                info!("Silence -> Speech detected at {}ms", start_ms);
-                self.vad_state = VadState::Speech;
-                self.current_speech_segments += 1;
-            } else if self.vad_state == VadState::Speech {
-                self.current_speech_segments += 1;
-                if speech_prob < self.vad_config.negative_speech_threshold {
-                    self.redemption_count += 1;
-                    if self.redemption_count > self.vad_config.redemption_frames {
-                        if self.current_speech_segments >= self.vad_config.min_speech_frames {
-                            let end_ms = (((self.total_processed_frames + i + 1) * self.frame_size()) as f32 / 8000.0 * 1000.0) as usize;
-                            info!("Speech -> Silence detected at {}ms", end_ms);
-                            ret.push(VadResult {
-                                start_ms,
-                                end_ms,
-                            });
+                if prob < self.config.negative_speech_threshold {
+                    *redemption_count += 1;
+                    if *redemption_count > self.config.redemption_frames {
+                        if *min_frames_passed {
+                            vad_change = Some(VadTransition::SpeechEnd);
                         }
-                        self.vad_state = VadState::Silence;
-                        self.redemption_count = 0;
-                        self.current_speech_segments = 0;
+                        self.state = VadState::Silence
                     }
                 } else {
-                    self.redemption_count = 0;
+                    *redemption_count = 0;
                 }
             }
+        };
 
-            processed_frames += 1;
-        }
-        self.total_processed_frames += num_frames;
+        Ok(vad_change)
+    }
 
-        // Clear audio buffer.
-        if processed_frames > 0 {
-            let start_idx = (processed_frames - 1) * self.frame_size();
-            let end_idx = processed_frames * self.frame_size();
-            drop(self.audio_buffer.drain(start_idx..end_idx));
+    pub fn get_current_speech(&self) -> &[f32] {
+        &self.current_speech
+    }
+
+    pub fn is_speaking(&self) -> bool {
+        match self.state {
+            VadState::Speech { min_frames_passed , .. } if min_frames_passed => true,
+            _ => false,
         }
-        ret
     }
 
     pub fn reset(&mut self) {
         self.h_tensor = Array3::<f32>::zeros((2, 1, 64));
         self.c_tensor = Array3::<f32>::zeros((2, 1, 64));
-        self.redemption_count = 0;
-        self.vad_state = VadState::Silence;
-        self.current_speech_segments = 0;
-        self.audio_buffer.clear();
-        self.total_processed_frames = 0;
     }
 }

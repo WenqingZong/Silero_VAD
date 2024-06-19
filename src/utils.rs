@@ -58,7 +58,6 @@ pub fn read_audio_file(file_path: impl AsRef<Path>, desired_sample_rate: usize, 
 
     // Get the default track.
     let track = format.default_track().unwrap();
-    dbg!(&track);
 
     // Create a decoder for the track.
     let mut decoder =
@@ -180,7 +179,7 @@ fn interleaved_to_channel(interleave_samples: Vec<f32>, num_of_channels: usize) 
 
 /// Resample one channel of pcm data into desired sample rate.
 pub fn resample_pcm(pcm_data: Vec<f32>, original_sample_rate: usize, desired_sample_rate: usize) -> Result<Vec<f32>> {
-    debug!("{} {} {}", &pcm_data.len(), original_sample_rate, desired_sample_rate);
+    debug!("Resampling {} samples from {}Hz to {}Hz", &pcm_data.len(), original_sample_rate, desired_sample_rate);
     let params = SincInterpolationParameters {
         sinc_len: 256,
         f_cutoff: 0.95,
