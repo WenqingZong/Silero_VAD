@@ -6,7 +6,7 @@ authors = ["Wenqing Zong"]
 description = "Easy to use, pure Rust implementation of Silero VAD algorithm"
 keywords = ["vad", "silero"]
 license = "GPL-2.0"
-homepage = "https://github.com/WenqingZong/Silero_VAD"
+repository = "https://github.com/WenqingZong/Silero_VAD"
 
 [dependencies]
 anyhow = "1.0.86"
